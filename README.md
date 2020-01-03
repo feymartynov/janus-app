@@ -11,11 +11,20 @@ There's already [janus-plugin](https://github.com/mozilla/janus-plugin-rs) crate
 This crate enables writing plugins in a more idiomatic Rust way:
 
 * Plugin code has nothing to do with raw pointers and unsafe C functions. These things are abstracted out by the crate.
-* Writing a plugin in Rust is a trait implementation, not a bunch of `extern "C"` functions.
+* A plugin is a trait implementation, not a bunch of `extern "C"` functions.
 * Object-oriented API instead of procedural.
 * A plugin and each of its handles may have their state.
-* Plugin handles' core C state is nnot mixed together with plugin's Rust state.
+* Plugin handles' core C state is not mixed together with plugin's Rust state.
 * All the C stuff lives in the main plugin thread. Other plugin's threads may operate safely and call callbacks in a safe way.
 * [Serde](https://github.com/serde-rs/serde) library is being used for (de)serialization within the plugin.
 
+## Example plugin
+
 For an example plugin see `example` sub-crate.
+
+You can build a docker image with Janus Gateway bundled with the plugin:
+
+```bash
+docker build -t janus-app-example:latest -f docker/Dockerfile .
+docker run --rm -it janus-app-example:latest
+```
