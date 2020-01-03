@@ -4,7 +4,6 @@ use std::path::Path;
 use serde::{de::DeserializeOwned, ser::Serialize};
 
 pub use crate::error::Error;
-pub use crate::handle_registry::HandleRegistry;
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -158,4 +157,5 @@ pub trait Plugin {
 
 mod error;
 mod ffi;
-mod handle_registry;
+pub mod handle_registry;
+pub mod plugin;

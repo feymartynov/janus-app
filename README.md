@@ -17,6 +17,7 @@ This crate enables writing plugins in a more idiomatic Rust way:
 * Plugin handles' core C state is not mixed together with plugin's Rust state.
 * All the C stuff lives in the main plugin thread. Other plugin's threads may operate safely and call callbacks in a safe way.
 * [Serde](https://github.com/serde-rs/serde) library is being used for (de)serialization within the plugin.
+* Unit testing is possible for plugins because they aren't coupled to C code.
 
 ## Example plugin
 
