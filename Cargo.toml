@@ -1,0 +1,10 @@
+[package]
+name = "janus-app"
+version = "0.1.0"
+authors = ["Timofey Martynov <feymartynov@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+jansson-sys = "0.1"
+janus-plugin-sys = { version = "0.6", features = ["refcount"] }
+serde = "1.0"

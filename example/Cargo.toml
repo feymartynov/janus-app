@@ -1,0 +1,20 @@
+[package]
+name = "janus-app-example"
+version = "0.1.0"
+authors = ["Timofey Martynov <feymartynov@gmail.com>"]
+edition = "2018"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+config = "0.10"
+jansson-sys = "0.1"
+janus-plugin-sys = { version = "0.6", features = ["refcount"] }
+serde = "1.0"
+serde_derive = "1.0"
+serde_json = "1.0"
+janus-app = "*"
+
+[patch.crates-io]
+janus-app = { path = ".." }
