@@ -1,6 +1,18 @@
-use janus_app::{Error, IncomingMessage, IncomingMessageResponse, MediaEvent};
-use serde::{de, ser};
-use serde_derive::Serialize;
+use janus_app::{Error, IncomingMessage, IncomingMessageResponse, MediaEvent, OutgoingMessage};
+use serde_derive::{Deserialize, Serialize};
+
+use crate::APP;
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "lowercase", tag = "method")]
+pub enum IncomingMessagePayload {
+    Ping { data: String },
+}
+
+#[derive(Debug, Serialize)]
+pub enum OutgoingMessagePayload {
+    Pong { data: String },
+}
 
 #[derive(Serialize)]
 pub struct Handle {
@@ -8,6 +20,9 @@ pub struct Handle {
 }
 
 impl janus_app::Handle for Handle {
+    type IncomingMessagePayload = IncomingMessagePayload;
+    type OutgoingMessagePayload = OutgoingMessagePayload;
+
     fn new(id: u64) -> Self {
         Self { id }
     }
@@ -40,11 +55,35 @@ impl janus_app::Handle for Handle {
         }
     }
 
-    fn handle_message<P: de::DeserializeOwned, J: de::DeserializeOwned, O: ser::Serialize>(
+    fn handle_message(
         &self,
-        message: &IncomingMessage<P, J>,
-    ) -> Result<IncomingMessageResponse<O>, Error> {
+        message: &IncomingMessage<Self::IncomingMessagePayload>,
+    ) -> Result<IncomingMessageResponse<Self::OutgoingMessagePayload>, Error> {
         println!("Got message on transaction {}", message.transaction());
+
+        // Send responses asynchronously for demonstration purpose.
+        let future = match message.payload() {
+            IncomingMessagePayload::Ping { data } => {
+                self.pong(message.transaction().to_owned(), data.to_owned())
+            }
+        };
+
+        // TODO: DI
+        APP.with(|app_ref| match *app_ref.borrow() {
+            Some(app) => app.plugin().thread_pool().spawn_ok(future),
+            None => println!("Plugin not initialized"),
+        });
+
         Ok(IncomingMessageResponse::Ack)
+    }
+}
+
+impl Handle {
+    async fn pong(&self, transaction: String, data: String) {
+        self.push_event(OutgoingMessage::new(
+            transaction.to_owned(),
+            OutgoingMessagePayload::Pong { data },
+        ))
+        .unwrap_or_else(|err| println!("Failed to push event: {}", err));
     }
 }

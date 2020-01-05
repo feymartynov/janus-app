@@ -8,6 +8,10 @@ impl Error {
     pub fn new(detail: &str) -> Self {
         Self(detail.to_owned())
     }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 impl StdError for Error {}

@@ -1,13 +1,14 @@
 use std::fmt;
 use std::path::Path;
 
-use serde::{de::DeserializeOwned, ser::Serialize};
+use serde::{de, ser};
+use serde_derive::{Deserialize, Serialize};
 
 pub use crate::error::Error;
 
 ///////////////////////////////////////////////////////////////////////////////
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum MediaProtocol {
     Rtp,
     Rtcp,
@@ -22,7 +23,7 @@ impl fmt::Display for MediaProtocol {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum MediaKind {
     Video,
     Audio,
@@ -55,19 +56,34 @@ pub enum MediaEvent<'a> {
     Hangup,
 }
 
-#[derive(Debug)]
-pub struct IncomingMessage<P: DeserializeOwned, J: DeserializeOwned> {
-    transaction: String,
-    payload: P,
-    jsep: J,
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase", tag = "type")]
+pub enum Jsep {
+    // TODO: Parse SDP.
+    Offer { sdp: String },
+    Answer { sdp: String },
 }
 
-impl<P: DeserializeOwned, J: DeserializeOwned> IncomingMessage<P, J> {
-    pub fn new(transaction: String, payload: P, jsep: J) -> Self {
+#[derive(Debug)]
+pub struct IncomingMessage<P: Clone + de::DeserializeOwned> {
+    transaction: String,
+    payload: P,
+    jsep: Option<Jsep>,
+}
+
+impl<P: Clone + de::DeserializeOwned> IncomingMessage<P> {
+    pub fn new(transaction: String, payload: P) -> Self {
         Self {
             transaction,
             payload,
-            jsep,
+            jsep: None,
+        }
+    }
+
+    pub fn set_jsep(self, jsep: Jsep) -> Self {
+        Self {
+            jsep: Some(jsep),
+            ..self
         }
     }
 
@@ -79,24 +95,31 @@ impl<P: DeserializeOwned, J: DeserializeOwned> IncomingMessage<P, J> {
         &self.payload
     }
 
-    pub fn jsep(&self) -> &J {
-        &self.jsep
+    pub fn jsep(&self) -> Option<&Jsep> {
+        self.jsep.as_ref()
     }
 }
 
-#[derive(Debug)]
-pub struct OutgoingMessage<P: Serialize, J: Serialize> {
+#[derive(Debug, Serialize)]
+pub struct OutgoingMessage<P: ser::Serialize> {
     transaction: String,
     payload: P,
-    jsep: J,
+    jsep: Option<Jsep>,
 }
 
-impl<P: Serialize, J: Serialize> OutgoingMessage<P, J> {
-    pub fn new(transaction: String, payload: P, jsep: J) -> Self {
+impl<P: ser::Serialize> OutgoingMessage<P> {
+    pub fn new(transaction: String, payload: P) -> Self {
         Self {
             transaction,
             payload,
-            jsep,
+            jsep: None,
+        }
+    }
+
+    pub fn set_jsep(self, jsep: Jsep) -> Self {
+        Self {
+            jsep: Some(jsep),
+            ..self
         }
     }
 
@@ -108,42 +131,35 @@ impl<P: Serialize, J: Serialize> OutgoingMessage<P, J> {
         &self.payload
     }
 
-    pub fn jsep(&self) -> &J {
-        &self.jsep
+    pub fn jsep(&self) -> Option<&Jsep> {
+        self.jsep.as_ref()
     }
 }
 
 #[derive(Debug)]
-pub enum IncomingMessageResponse<P: Serialize> {
+pub enum IncomingMessageResponse<P: ser::Serialize> {
     Ack,
     Syncronous(P),
 }
 
-pub trait Handle: Serialize {
+pub trait Handle: ser::Serialize {
+    type IncomingMessagePayload: Clone + de::DeserializeOwned;
+    type OutgoingMessagePayload: ser::Serialize;
+
     fn new(id: u64) -> Self;
     fn id(&self) -> u64;
     fn handle_media_event(&self, media_event: &MediaEvent);
 
-    fn handle_message<P: DeserializeOwned, J: DeserializeOwned, O: Serialize>(
+    fn handle_message(
         &self,
-        message: &IncomingMessage<P, J>,
-    ) -> Result<IncomingMessageResponse<O>, Error>;
-}
-
-pub trait HandleCallbacks {
-    fn log(&self, message: &str);
-    fn relay_media_packet(&self, protocol: MediaProtocol, kind: MediaKind, buffer: &mut [i8]);
-    fn relay_data_packet(&self, buffer: &mut [i8]);
-    fn close_peer_connection(&self);
-    fn end(&self);
-    fn notify_event<E: Serialize>(&self, event: &E);
-    fn push_event<P: Serialize, J: Serialize>(
-        &self,
-        message: OutgoingMessage<P, J>,
-    ) -> Result<(), Error>;
+        message: &IncomingMessage<Self::IncomingMessagePayload>,
+    ) -> Result<IncomingMessageResponse<Self::OutgoingMessagePayload>, Error>;
 }
 
 pub trait Plugin {
+    type Handle: Handle;
+    type Event: ser::Serialize;
+
     fn version() -> i32;
     fn description() -> &'static str;
     fn name() -> &'static str;
@@ -157,5 +173,4 @@ pub trait Plugin {
 
 mod error;
 mod ffi;
-pub mod handle_registry;
 pub mod plugin;

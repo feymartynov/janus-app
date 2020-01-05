@@ -1,20 +1,38 @@
 use std::path::Path;
 
+use futures::executor::ThreadPool;
 use janus_app::{janus_plugin, Error, Plugin};
 
-use crate::{config::Config, handle::Handle};
+use crate::{config::Config, event::Event, handle::Handle};
 
 pub struct ExamplePlugin {
+    #[allow(dead_code)]
     config: Config,
+    thread_pool: ThreadPool,
 }
 
 impl ExamplePlugin {
-    fn new(config: Config) -> Self {
-        Self { config }
+    fn new(config: Config, thread_pool: ThreadPool) -> Self {
+        Self {
+            config,
+            thread_pool,
+        }
+    }
+
+    #[allow(dead_code)]
+    fn config(&self) -> &Config {
+        &self.config
+    }
+
+    fn thread_pool(&self) -> &ThreadPool {
+        &self.thread_pool
     }
 }
 
 impl Plugin for ExamplePlugin {
+    type Handle = Handle;
+    type Event = Event;
+
     fn version() -> i32 {
         1
     }
@@ -43,11 +61,15 @@ impl Plugin for ExamplePlugin {
         let config = Config::from_path(config_path)
             .map_err(|err| Error::new(&format!("Failed to load config: {}", err)))?;
 
-        Ok(Box::new(Self::new(config)))
+        let thread_pool = ThreadPool::new()
+            .map_err(|err| Error::new(&format!("Failed to start thread pool: {}", err)))?;
+
+        Ok(Box::new(Self::new(config, thread_pool)))
     }
 }
 
-janus_plugin!(ExamplePlugin, Handle);
+janus_plugin!(ExamplePlugin);
 
 mod config;
+mod event;
 mod handle;
