@@ -163,6 +163,7 @@ pub trait Plugin {
     type Handle: Handle;
 
     fn version() -> i32;
+    fn version_string() -> &'static str;
     fn description() -> &'static str;
     fn name() -> &'static str;
     fn author() -> &'static str;

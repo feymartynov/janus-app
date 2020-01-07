@@ -7,7 +7,7 @@ const CONFIG_FILE_NAME: &str = "janus.plugin.example.toml";
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct Config {
-    pub dummy: String,
+    pub ping_response: String,
 }
 
 impl Config {

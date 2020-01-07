@@ -7,6 +7,8 @@ use janus_app::{
 };
 use serde_derive::{Deserialize, Serialize};
 
+use crate::config::Config;
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "lowercase", tag = "method")]
 pub enum IncomingMessagePayload {
@@ -27,6 +29,8 @@ pub struct Handle {
     #[serde(skip)]
     callback_dispatcher: CallbackDispatcher<Self>,
     #[serde(skip)]
+    config: Arc<Config>,
+    #[serde(skip)]
     thread_pool: Arc<ThreadPool>,
 }
 
@@ -34,11 +38,13 @@ impl Handle {
     pub(crate) fn new(
         id: u64,
         callback_dispatcher: CallbackDispatcher<Self>,
+        config: Arc<Config>,
         thread_pool: Arc<ThreadPool>,
     ) -> Self {
         Self {
             id,
             callback_dispatcher,
+            config,
             thread_pool,
         }
     }
@@ -84,8 +90,9 @@ impl janus_app::Handle for Handle {
         println!("Got message on transaction {}", message.transaction());
 
         let future = match message.payload() {
-            IncomingMessagePayload::Ping { data } => pong(
+            IncomingMessagePayload::Ping { data } => ping(
                 self.callback_dispatcher.clone(),
+                self.config.clone(),
                 message.transaction().to_owned(),
                 data.to_owned(),
             ),
@@ -96,11 +103,18 @@ impl janus_app::Handle for Handle {
     }
 }
 
-async fn pong(dispatcher: CallbackDispatcher<Handle>, transaction: String, data: String) {
+async fn ping(
+    dispatcher: CallbackDispatcher<Handle>,
+    config: Arc<Config>,
+    transaction: String,
+    data: String,
+) {
     dispatcher
         .push_event(OutgoingMessage::new(
             transaction,
-            OutgoingMessagePayload::Pong { data },
+            OutgoingMessagePayload::Pong {
+                data: format!("{} {}", data, config.ping_response),
+            },
         ))
         .unwrap_or_else(|err| println!("{}", err));
 }
