@@ -5,6 +5,7 @@ authors = ["Timofey Martynov <feymartynov@gmail.com>"]
 edition = "2018"
 
 [dependencies]
+gobject-sys = "0.4"
 jansson-sys = "0.1"
 janus-plugin-sys = { version = "0.6", features = ["refcount"] }
 serde = "1.0"

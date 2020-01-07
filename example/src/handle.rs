@@ -1,7 +1,11 @@
-use janus_app::{Error, IncomingMessage, IncomingMessageResponse, MediaEvent, OutgoingMessage};
-use serde_derive::{Deserialize, Serialize};
+use std::sync::Arc;
 
-use crate::APP;
+use futures::executor::ThreadPool;
+use janus_app::{
+    plugin::CallbackDispatcher, Error, IncomingMessage, IncomingMessageResponse, MediaEvent,
+    OutgoingMessage,
+};
+use serde_derive::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "lowercase", tag = "method")]
@@ -15,17 +19,35 @@ pub enum OutgoingMessagePayload {
 }
 
 #[derive(Serialize)]
+pub struct Event {}
+
+#[derive(Clone, Serialize)]
 pub struct Handle {
     id: u64,
+    #[serde(skip)]
+    callback_dispatcher: CallbackDispatcher<Self>,
+    #[serde(skip)]
+    thread_pool: Arc<ThreadPool>,
+}
+
+impl Handle {
+    pub(crate) fn new(
+        id: u64,
+        callback_dispatcher: CallbackDispatcher<Self>,
+        thread_pool: Arc<ThreadPool>,
+    ) -> Self {
+        Self {
+            id,
+            callback_dispatcher,
+            thread_pool,
+        }
+    }
 }
 
 impl janus_app::Handle for Handle {
     type IncomingMessagePayload = IncomingMessagePayload;
     type OutgoingMessagePayload = OutgoingMessagePayload;
-
-    fn new(id: u64) -> Self {
-        Self { id }
-    }
+    type Event = Event;
 
     fn id(&self) -> u64 {
         self.id
@@ -61,29 +83,24 @@ impl janus_app::Handle for Handle {
     ) -> Result<IncomingMessageResponse<Self::OutgoingMessagePayload>, Error> {
         println!("Got message on transaction {}", message.transaction());
 
-        // Send responses asynchronously for demonstration purpose.
         let future = match message.payload() {
-            IncomingMessagePayload::Ping { data } => {
-                self.pong(message.transaction().to_owned(), data.to_owned())
-            }
+            IncomingMessagePayload::Ping { data } => pong(
+                self.callback_dispatcher.clone(),
+                message.transaction().to_owned(),
+                data.to_owned(),
+            ),
         };
 
-        // TODO: DI
-        APP.with(|app_ref| match *app_ref.borrow() {
-            Some(app) => app.plugin().thread_pool().spawn_ok(future),
-            None => println!("Plugin not initialized"),
-        });
-
+        self.thread_pool.spawn_ok(future);
         Ok(IncomingMessageResponse::Ack)
     }
 }
 
-impl Handle {
-    async fn pong(&self, transaction: String, data: String) {
-        self.push_event(OutgoingMessage::new(
-            transaction.to_owned(),
+async fn pong(dispatcher: CallbackDispatcher<Handle>, transaction: String, data: String) {
+    dispatcher
+        .push_event(OutgoingMessage::new(
+            transaction,
             OutgoingMessagePayload::Pong { data },
         ))
-        .unwrap_or_else(|err| println!("Failed to push event: {}", err));
-    }
+        .unwrap_or_else(|err| println!("{}", err));
 }

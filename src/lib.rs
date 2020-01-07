@@ -1,10 +1,13 @@
 use std::fmt;
+use std::marker::Sized;
 use std::path::Path;
 
 use serde::{de, ser};
 use serde_derive::{Deserialize, Serialize};
 
-pub use crate::error::Error;
+use plugin::CallbackDispatcher;
+
+pub use error::Error;
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -142,11 +145,11 @@ pub enum IncomingMessageResponse<P: ser::Serialize> {
     Syncronous(P),
 }
 
-pub trait Handle: ser::Serialize {
+pub trait Handle: Clone + Sized + ser::Serialize {
     type IncomingMessagePayload: Clone + de::DeserializeOwned;
-    type OutgoingMessagePayload: ser::Serialize;
+    type OutgoingMessagePayload: Send + ser::Serialize;
+    type Event: Send + ser::Serialize;
 
-    fn new(id: u64) -> Self;
     fn id(&self) -> u64;
     fn handle_media_event(&self, media_event: &MediaEvent);
 
@@ -158,7 +161,6 @@ pub trait Handle: ser::Serialize {
 
 pub trait Plugin {
     type Handle: Handle;
-    type Event: ser::Serialize;
 
     fn version() -> i32;
     fn description() -> &'static str;
@@ -167,6 +169,12 @@ pub trait Plugin {
     fn package() -> &'static str;
     fn is_events_enabled() -> bool;
     fn init(config_path: &Path) -> Result<Box<Self>, Error>;
+
+    fn build_handle(
+        &self,
+        id: u64,
+        callback_dispatcher: CallbackDispatcher<Self::Handle>,
+    ) -> Self::Handle;
 }
 
 ///////////////////////////////////////////////////////////////////////////////

@@ -1,21 +1,22 @@
 use std::path::Path;
+use std::sync::Arc;
 
 use futures::executor::ThreadPool;
-use janus_app::{janus_plugin, Error, Plugin};
+use janus_app::{janus_plugin, plugin::CallbackDispatcher, Error, Plugin};
 
-use crate::{config::Config, event::Event, handle::Handle};
+use crate::{config::Config, handle::Handle};
 
 pub struct ExamplePlugin {
     #[allow(dead_code)]
     config: Config,
-    thread_pool: ThreadPool,
+    thread_pool: Arc<ThreadPool>,
 }
 
 impl ExamplePlugin {
     fn new(config: Config, thread_pool: ThreadPool) -> Self {
         Self {
             config,
-            thread_pool,
+            thread_pool: Arc::new(thread_pool),
         }
     }
 
@@ -23,15 +24,10 @@ impl ExamplePlugin {
     fn config(&self) -> &Config {
         &self.config
     }
-
-    fn thread_pool(&self) -> &ThreadPool {
-        &self.thread_pool
-    }
 }
 
 impl Plugin for ExamplePlugin {
     type Handle = Handle;
-    type Event = Event;
 
     fn version() -> i32 {
         1
@@ -66,10 +62,17 @@ impl Plugin for ExamplePlugin {
 
         Ok(Box::new(Self::new(config, thread_pool)))
     }
+
+    fn build_handle(
+        &self,
+        id: u64,
+        callback_dispatcher: CallbackDispatcher<Self::Handle>,
+    ) -> Self::Handle {
+        Handle::new(id, callback_dispatcher, self.thread_pool.clone())
+    }
 }
 
 janus_plugin!(ExamplePlugin);
 
 mod config;
-mod event;
 mod handle;
