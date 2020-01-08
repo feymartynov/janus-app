@@ -21,7 +21,8 @@ pub enum OutgoingMessagePayload {
 }
 
 #[derive(Serialize)]
-pub struct Event {}
+#[serde(rename_all = "lowercase", tag = "label")]
+pub enum Event {}
 
 #[derive(Clone, Serialize)]
 pub struct Handle {

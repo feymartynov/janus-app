@@ -24,6 +24,9 @@ pub use janus_plugin_sys::plugin::janus_plugin as JanusPlugin;
 
 ///////////////////////////////////////////////////////////////////////////////
 
+/// This macro defines low-level stuff to make the project a proper Janus plugin.
+///
+/// Call it in the main module of you project with a type that implements `Plugin` trait.
 #[macro_export]
 macro_rules! janus_plugin {
     ($plugin:ty) => {
@@ -475,6 +478,8 @@ impl<H: Handle> CallbackDispatch<H> {
     }
 }
 
+/// An object for calling back Janus core.
+/// The object is tied to the handle.
 #[derive(Clone)]
 pub struct CallbackDispatcher<H: Handle> {
     tx: mpsc::Sender<CallbackDispatch<H>>,
@@ -486,6 +491,7 @@ impl<H: Handle> CallbackDispatcher<H> {
         Self { tx, handle_id }
     }
 
+    /// Sends media `buffer` of `kind` type to the current handle by `protocol`.
     pub fn relay_media_packet(
         &self,
         protocol: MediaProtocol,
@@ -503,6 +509,7 @@ impl<H: Handle> CallbackDispatcher<H> {
         })
     }
 
+    /// Sends `buffer` to the data channel of the current handle.
     pub fn relay_data_packet(&self, buffer: &[i8]) -> Result<(), Error> {
         // TODO: Copying for thread safety is not good for performance.
         let mut owned_buffer = Vec::with_capacity(buffer.len());
@@ -513,18 +520,22 @@ impl<H: Handle> CallbackDispatcher<H> {
         })
     }
 
+    /// Closes PeerConnection of the current handle.
     pub fn close_peer_connection(&self) -> Result<(), Error> {
         self.dispatch(Callback::ClosePeerConnection)
     }
 
+    /// Ends current handle.
     pub fn end_handle(&self) -> Result<(), Error> {
         self.dispatch(Callback::EndHandle)
     }
 
+    /// Broadcasts an `event` to Janus's event handlers from the current handle.
     pub fn notify_event(&self, event: H::Event) -> Result<(), Error> {
         self.dispatch(Callback::NotifyEvent { event })
     }
 
+    /// Sends an event `message` to the current handle's client.
     pub fn push_event(
         &self,
         message: OutgoingMessage<H::OutgoingMessagePayload>,
