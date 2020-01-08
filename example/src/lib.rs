@@ -24,33 +24,12 @@ impl ExamplePlugin {
 impl Plugin for ExamplePlugin {
     type Handle = Handle;
 
-    fn version() -> i32 {
-        1
-    }
-
-    fn version_string() -> &'static str {
-        "0.0.1"
-    }
-
-    fn description() -> &'static str {
-        "Example plugin"
-    }
-
-    fn name() -> &'static str {
-        "Example"
-    }
-
-    fn author() -> &'static str {
-        "Fey Martynov"
-    }
-
-    fn package() -> &'static str {
-        "janus.plugin.app_example"
-    }
-
-    fn is_events_enabled() -> bool {
-        false
-    }
+    const VERSION: i32 = 1;
+    const VERSION_STRING: &'static str = "0.0.1";
+    const NAME: &'static str = "Example";
+    const DESCRIPTION: &'static str = "Example plugin";
+    const AUTHOR: &'static str = "Fey Martynov";
+    const PACKAGE: &'static str = "janus.plugin.app_example";
 
     fn init(config_path: &Path) -> Result<Box<Self>, Error> {
         let config = Config::from_path(config_path)

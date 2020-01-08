@@ -78,6 +78,12 @@ macro_rules! janus_plugin {
     };
 }
 
+macro_rules! c_str {
+    ($s:expr) => {
+        unsafe { CStr::from_ptr($s.as_ptr() as *const c_char) }
+    };
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 
 pub struct App<'a, P: 'static + PluginApp> {
@@ -125,6 +131,34 @@ pub trait PluginApp: Send + Sized + Plugin {
 
 ///////////////////////////////////////////////////////////////////////////////
 
+pub extern "C" fn get_api_compatibility() -> c_int {
+    13
+}
+
+pub extern "C" fn get_version<P: Plugin>() -> c_int {
+    P::VERSION
+}
+
+pub extern "C" fn get_version_string<P: Plugin>() -> *const c_char {
+    c_str!(P::VERSION_STRING).as_ptr()
+}
+
+pub extern "C" fn get_description<P: Plugin>() -> *const c_char {
+    c_str!(P::DESCRIPTION).as_ptr()
+}
+
+pub extern "C" fn get_name<P: Plugin>() -> *const c_char {
+    c_str!(P::NAME).as_ptr()
+}
+
+pub extern "C" fn get_author<P: Plugin>() -> *const c_char {
+    c_str!(P::AUTHOR).as_ptr()
+}
+
+pub extern "C" fn get_package<P: Plugin>() -> *const c_char {
+    c_str!(P::PACKAGE).as_ptr()
+}
+
 pub extern "C" fn init<P: PluginApp>(
     callbacks: *mut JanusCallbacks,
     config_path: *const c_char,
@@ -161,44 +195,6 @@ fn init_impl<P: PluginApp>(
 
 pub extern "C" fn destroy<P: PluginApp>() {
     P::with_app(|app_ref| *app_ref.borrow_mut() = None);
-}
-
-pub extern "C" fn get_api_compatibility() -> c_int {
-    13
-}
-
-pub extern "C" fn get_version<P: Plugin>() -> c_int {
-    P::version()
-}
-
-pub extern "C" fn get_version_string<P: Plugin>() -> *const c_char {
-    CString::new(format!("{}", P::version()).as_bytes())
-        .expect("Failed cast version string")
-        .as_ptr()
-}
-
-pub extern "C" fn get_description<P: Plugin>() -> *const c_char {
-    CString::new(P::description())
-        .expect("Failed to cast description")
-        .as_ptr()
-}
-
-pub extern "C" fn get_name<P: Plugin>() -> *const c_char {
-    CString::new(P::name())
-        .expect("Failed to cast name")
-        .as_ptr()
-}
-
-pub extern "C" fn get_author<P: Plugin>() -> *const c_char {
-    CString::new(P::author())
-        .expect("Failed to cast author")
-        .as_ptr()
-}
-
-pub extern "C" fn get_package<P: Plugin>() -> *const c_char {
-    CString::new(P::package())
-        .expect("Failed to cast package")
-        .as_ptr()
 }
 
 pub extern "C" fn create_session<P: PluginApp>(handle: *mut JanusPluginSession, error: *mut c_int) {
@@ -729,7 +725,8 @@ impl<P: 'static + PluginApp> CallbackDispatcherBackend<P> {
 
 fn janus_log(message: &str) {
     // TODO: Add better logging with levels and colors.
-    let c_message = CString::new(message).expect("Failed to cast error message");
+    let message_nl = format!("{}\n", message);
+    let c_message = CString::new(message_nl.as_str()).expect("Failed to cast error message");
     unsafe { janus_plugin_sys::janus_vprintf(c_message.as_ptr()) };
 }
 

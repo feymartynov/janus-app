@@ -1,17 +1,17 @@
 //! This is an experimental high-level Rust binding to
 //! [Janus Gateway](https://github.com/meetecho/janus-gateway)'s application plugin API.
-//! 
+//!
 //! **WARNING!** This project is an experimental and not tested WIP.
 //! Don't try to use it for creating actual plugins.
-//! 
+//!
 //! # The concept
-//! 
+//!
 //! There's already [janus-plugin](https://github.com/mozilla/janus-plugin-rs) crate which enables
 //! creating plugins for Janus Gateway but its API is
 //! [too low-level and unsafe](https://github.com/mozilla/janus-plugin-rs/issues/10).
-//! 
+//!
 //! This crate enables writing plugins in a more idiomatic Rust way:
-//! 
+//!
 //! * Plugin code has nothing to do with raw pointers and unsafe C functions. These things are abstracted out by the crate.
 //! * A plugin is a trait implementation, not a bunch of `extern "C"` functions.
 //! * Object-oriented API instead of procedural.
@@ -76,61 +76,20 @@
 //!
 //! impl Plugin for MyPlugin {
 //!   type Handle = MyHandle;
+//!
+//!   const VERSION: i32 = 1;
+//!   const VERSION_STRING: &'static str = "0.0.1";
+//!   const NAME: &'static str = "Author name";
+//!   const DESCRIPTION: &'static str = "My plugin description";
+//!   const PACKAGE: &'static str = "janus.plugin.my_plugin";
 //! }
 //!
 //! janus_plugin!(MyPlugin);
 //! ```
 //!
 //! The [Plugin](trait.Plugin.html) trait requires to define an associated type for plugin handle
-//! which we'll define later, plugin info methods and also [init](trait.Plugin.html#tymethod.init)
+//! which we'll define later, plugin info constants and also [init](trait.Plugin.html#tymethod.init)
 //! and [build_handle](trait.Plugin.html#tymethod.build_handle) methods.
-//!
-//!
-//! ###  Adding plugin info methods
-//!
-//! Janus core requires us to provide some info about our plugin.
-//! Add the following to `impl Plugin for MyPlugin` block:
-//!
-//! ```rust
-//! fn version() -> i32 {
-//!     1
-//! }
-//! 
-//! fn version_string() -> &'static str {
-//!     "0.0.1"
-//! }
-//! 
-//! fn description() -> &'static str {
-//!     "My plugin description"
-//! }
-//! 
-//! fn name() -> &'static str {
-//!     "My plugin name"
-//! }
-//! 
-//! fn author() -> &'static str {
-//!     "Author name"
-//! }
-//! 
-//! fn package() -> &'static str {
-//!     "janus.plugin.my_plugin"
-//! }
-//! 
-//! fn is_events_enabled() -> bool {
-//!     false
-//! }
-//! ```
-//!
-//! This is pretty self-explanatory but requires some notes.
-//!
-//! First, each time you release a new version of your plugin, no matter major or minor, you have to
-//! increment the number in [version](trait.Plugin.html#tymethod.version) function by one.
-//! For your actual semantic version change the literal in
-//! [version_string](trait.Plugin.html#tymethod.version_string).
-//!
-//! The value retuned by [package](trait.Plugin.html#tymethod.package) function is the one clients
-//! must use in `plugin` parameter when creating a plugin handle.
-//!
 //!
 //! ### Implementing [init](trait.Plugin.html#tymethod.init)
 //!
@@ -182,7 +141,7 @@
 //! ### Defininng data types
 //!
 //! Before defining the handle type let's define some data types to associate it with:
-//! 
+//!
 //! ```rust
 //! #[derive(Clone, Debug, Deserialize)]
 //! #[serde(rename_all = "lowercase", tag = "method")]
@@ -361,14 +320,9 @@ pub enum MediaEvent<'a> {
         buffer: &'a [i8],
     },
     /// Incoming buffer from data channel.
-    Data {
-        buffer: &'a [i8],
-    },
+    Data { buffer: &'a [i8] },
     /// Slow link detected by Janus core.
-    SlowLink {
-        kind: MediaKind,
-        uplink: isize,
-    },
+    SlowLink { kind: MediaKind, uplink: isize },
     /// PeerConnection hanged up.
     Hangup,
 }
@@ -500,26 +454,23 @@ pub trait Plugin {
 
     /// Numeric plugin version.
     /// Increment this with each release no matter whether it's major or minor.
-    fn version() -> i32;
+    const VERSION: i32;
 
     /// Semantic plugin version as string literal.
-    fn version_string() -> &'static str;
-
-    /// Plugin description as string literal.
-    fn description() -> &'static str;
+    const VERSION_STRING: &'static str;
 
     /// Plugin name as string literal.
-    fn name() -> &'static str;
+    const NAME: &'static str;
+
+    /// Plugin description as string literal.
+    const DESCRIPTION: &'static str;
 
     /// Plugin author name as string literal.
-    fn author() -> &'static str;
+    const AUTHOR: &'static str;
 
     /// Package name as string literal.
     /// This value must be used by clients to create a plugin handle with Janus's `attach` call.
-    fn package() -> &'static str;
-
-    /// Whether to enable events.
-    fn is_events_enabled() -> bool;
+    const PACKAGE: &'static str;
 
     /// This is being called when initializing the plugin to create its instance.
     ///
