@@ -29,3 +29,13 @@ You can build a docker image with Janus Gateway bundled with the plugin:
 docker build -t janus-app-example:latest -f docker/Dockerfile .
 docker run --rm -it -p 8188:8188 janus-app-example:latest
 ```
+
+## Documentation
+
+Build documentation with:
+
+```bash
+cargo doc --no-deps
+```
+
+then open `target/doc/janus_app/index.html`.

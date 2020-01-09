@@ -1,11 +1,11 @@
-use std::cell::RefCell;
 use std::convert::TryInto;
 use std::ffi::{CStr, CString};
-use std::marker::PhantomData;
 use std::os::raw::{c_char, c_int};
 use std::path::Path;
-use std::sync::mpsc;
-use std::thread;
+use std::sync::{
+    atomic::{AtomicPtr, Ordering},
+    RwLock,
+};
 
 use jansson_sys::{json_dumps, json_loads, json_t};
 use janus_plugin_sys::plugin::{
@@ -15,8 +15,8 @@ use janus_plugin_sys::plugin::{
 use serde::{de::DeserializeOwned, ser::Serialize};
 
 use crate::{
-    Error, Handle, IncomingMessage, IncomingMessageResponse, Jsep, MediaEvent, MediaKind,
-    MediaProtocol, OutgoingMessage, Plugin,
+    Error, Handle, IncomingMessage, Jsep, MediaEvent, MediaKind, MediaProtocol, MessageResponse,
+    OutgoingMessage, Plugin,
 };
 use handle_registry::HandleRegistry;
 
@@ -52,9 +52,9 @@ macro_rules! janus_plugin {
             query_session: janus_app::plugin::query_session::<$plugin>,
         };
 
-        thread_local! {
-            static APP: std::cell::RefCell<Option<janus_app::plugin::App<'static, $plugin>>> =
-                std::cell::RefCell::new(None);
+        janus_app::lazy_static! {
+            static ref APP: std::sync::RwLock<Option<janus_app::plugin::App<$plugin>>> =
+                std::sync::RwLock::new(None);
         }
 
         impl janus_app::plugin::PluginApp for $plugin {
@@ -62,11 +62,8 @@ macro_rules! janus_plugin {
                 &mut JANUS_PLUGIN
             }
 
-            fn with_app<F, R>(f: F) -> R
-            where
-                F: Fn(&std::cell::RefCell<Option<janus_app::plugin::App<$plugin>>>) -> R,
-            {
-                APP.with(|app_ref| f(app_ref))
+            fn app() -> &'static std::sync::RwLock<Option<janus_app::plugin::App<$plugin>>> {
+                &APP
             }
         }
 
@@ -86,17 +83,17 @@ macro_rules! c_str {
 
 ///////////////////////////////////////////////////////////////////////////////
 
-pub struct App<'a, P: 'static + PluginApp> {
+pub struct App<P: PluginApp> {
     plugin: P,
-    callback_dispatcher_tx: mpsc::Sender<CallbackDispatch<P::Handle>>,
-    handle_registry: HandleRegistry<'a, P>,
+    janus_callbacks: AtomicPtr<JanusCallbacks>,
+    handle_registry: HandleRegistry<P>,
 }
 
-impl<'a, P: 'static + PluginApp> App<'a, P> {
+impl<P: PluginApp> App<P> {
     fn new(plugin: P, janus_callbacks: *mut JanusCallbacks) -> Self {
         Self {
             plugin,
-            callback_dispatcher_tx: CallbackDispatcherBackend::<P>::start(janus_callbacks),
+            janus_callbacks: AtomicPtr::new(janus_callbacks),
             handle_registry: HandleRegistry::<P>::new(),
         }
     }
@@ -105,28 +102,38 @@ impl<'a, P: 'static + PluginApp> App<'a, P> {
         &self.plugin
     }
 
-    fn handle_registry(&self) -> &HandleRegistry<'a, P> {
+    fn handle_registry(&self) -> &HandleRegistry<P> {
         &self.handle_registry
     }
 
-    fn handle_registry_mut(&mut self) -> &mut HandleRegistry<'a, P> {
+    fn handle_registry_mut(&mut self) -> &mut HandleRegistry<P> {
         &mut self.handle_registry
     }
 
-    fn build_handle(&self, id: u64) -> P::Handle {
-        let handle_callback_dispatcher =
-            CallbackDispatcher::<P::Handle>::new(self.callback_dispatcher_tx.clone(), id);
+    fn janus_callbacks(&self) -> *mut JanusCallbacks {
+        self.janus_callbacks.load(Ordering::Relaxed)
+    }
 
-        self.plugin().build_handle(id, handle_callback_dispatcher)
+    fn build_handle(&self, id: u64) -> P::Handle {
+        self.plugin().build_handle(id)
+    }
+
+    pub fn handle(&self, id: u64) -> Option<&P::Handle> {
+        self.handle_registry
+            .get_by_id(id)
+            .map(|entry| entry.plugin_handle())
+    }
+
+    pub fn handle_mut(&mut self, id: u64) -> Option<&mut P::Handle> {
+        self.handle_registry
+            .get_by_id_mut(id)
+            .map(|entry| entry.plugin_handle_mut())
     }
 }
 
-pub trait PluginApp: Send + Sized + Plugin {
+pub trait PluginApp: 'static + Send + Sized + Plugin {
     fn janus_plugin() -> *mut JanusPlugin;
-
-    fn with_app<F, R>(f: F) -> R
-    where
-        F: Fn(&RefCell<Option<App<Self>>>) -> R;
+    fn app() -> &'static RwLock<Option<App<Self>>>;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -176,25 +183,30 @@ fn init_impl<P: PluginApp>(
     callbacks: *mut JanusCallbacks,
     config_path: *const c_char,
 ) -> Result<(), Error> {
-    P::with_app(|app_ref| {
-        if (*app_ref.borrow()).is_some() {
-            return Err(Error::new("Plugin already initialized"));
-        }
+    let mut app_ref = P::app()
+        .write()
+        .map_err(|err| Error::new(&format!("Failed to acquire app write lock: {}", err)))?;
 
-        let config_path = unsafe { CStr::from_ptr(config_path) }
-            .to_str()
-            .map_err(|err| Error::new(&format!("Failed to cast config path: {}", err)))?;
+    if (*app_ref).is_some() {
+        return Err(Error::new("Plugin already initialized"));
+    }
 
-        let plugin = P::init(&Path::new(config_path))
-            .map_err(|err| Error::new(&format!("Failed to init plugin: {}", err)))?;
+    let config_path = unsafe { CStr::from_ptr(config_path) }
+        .to_str()
+        .map_err(|err| Error::new(&format!("Failed to cast config path: {}", err)))?;
 
-        *app_ref.borrow_mut() = Some(App::new(*plugin, unsafe { &mut *callbacks }));
-        Ok(())
-    })
+    let plugin = P::init(&Path::new(config_path))
+        .map_err(|err| Error::new(&format!("Failed to init plugin: {}", err)))?;
+
+    *app_ref = Some(App::new(*plugin, unsafe { &mut *callbacks }));
+    Ok(())
 }
 
 pub extern "C" fn destroy<P: PluginApp>() {
-    P::with_app(|app_ref| *app_ref.borrow_mut() = None);
+    match P::app().write() {
+        Ok(mut app_ref) => *app_ref = None,
+        Err(err) => janus_log(&format!("Failed to acquire app write lock: {}", err)),
+    }
 }
 
 pub extern "C" fn create_session<P: PluginApp>(handle: *mut JanusPluginSession, error: *mut c_int) {
@@ -210,7 +222,11 @@ pub extern "C" fn create_session<P: PluginApp>(handle: *mut JanusPluginSession, 
 }
 
 fn create_session_impl<P: PluginApp>(raw_handle: *mut JanusPluginSession) -> Result<(), Error> {
-    P::with_app(|app_ref| match &mut *app_ref.borrow_mut() {
+    let mut app_ref = P::app()
+        .write()
+        .map_err(|err| Error::new(&format!("Failed to acquire app write lock: {}", err)))?;
+
+    match &mut *app_ref {
         None => Err(Error::new("Plugin not initialized")),
         Some(app) => {
             let handle_id = HandleRegistry::<P>::fetch_id(raw_handle);
@@ -225,7 +241,7 @@ fn create_session_impl<P: PluginApp>(raw_handle: *mut JanusPluginSession) -> Res
                     .map_err(|err| Error::new(&format!("Failed to register handle: {}", err))),
             }
         }
-    })
+    }
 }
 
 pub extern "C" fn handle_message<P: PluginApp>(
@@ -261,13 +277,18 @@ fn handle_message_impl<P: PluginApp>(
     payload: *mut json_t,
     jsep: *mut json_t,
 ) -> Result<JanusPluginResult, Error> {
-    P::with_app(|app_ref| match &*app_ref.borrow() {
+    let app_ref = P::app()
+        .read()
+        .map_err(|err| Error::new(&format!("Failed to acquire app read lock: {}", err)))?;
+
+    match &*app_ref {
         None => Err(Error::new("Plugin not initialized")),
         Some(app) => {
-            let (_, plugin_handle) = app
+            let plugin_handle = app
                 .handle_registry()
                 .get_by_raw_handle(raw_handle)
-                .ok_or_else(|| Error::new("Handle not found"))?;
+                .ok_or_else(|| Error::new("Handle not found"))?
+                .plugin_handle();
 
             let transaction_str = unsafe { CString::from_raw(transaction) }
                 .to_str()
@@ -281,14 +302,14 @@ fn handle_message_impl<P: PluginApp>(
                 None => message,
             };
 
-            match plugin_handle.handle_message(&message) {
+            match plugin_handle.handle_message(message) {
                 Err(err) => Err(Error::new(&format!("Error handlung message: {}", err))),
-                Ok(IncomingMessageResponse::Ack) => Ok(JanusPluginResult {
+                Ok(MessageResponse::Ack) => Ok(JanusPluginResult {
                     type_: JanusPluginResultType::JANUS_PLUGIN_OK_WAIT,
                     text: CString::new("").expect("Failed to cast text").into_raw(),
                     content: std::ptr::null_mut(),
                 }),
-                Ok(IncomingMessageResponse::Syncronous(ref response_payload)) => {
+                Ok(MessageResponse::Syncronous(ref response_payload)) => {
                     serialize(response_payload)
                         .map(|content| JanusPluginResult {
                             type_: JanusPluginResultType::JANUS_PLUGIN_OK,
@@ -301,7 +322,7 @@ fn handle_message_impl<P: PluginApp>(
                 }
             }
         }
-    })
+    }
 }
 
 pub extern "C" fn setup_media<P: PluginApp>(raw_handle: *mut JanusPluginSession) {
@@ -407,10 +428,14 @@ pub extern "C" fn destroy_session<P: PluginApp>(
 }
 
 fn destroy_session_impl<P: PluginApp>(raw_handle: *mut JanusPluginSession) -> Result<(), Error> {
-    P::with_app(|app_ref| match &mut *app_ref.borrow_mut() {
+    let mut app_ref = P::app()
+        .write()
+        .map_err(|err| Error::new(&format!("Failed to acquire app write lock: {}", err)))?;
+
+    match &mut *app_ref {
         None => Err(Error::new("Plugin not initialized")),
         Some(app) => app.handle_registry_mut().remove(raw_handle),
-    })
+    }
 }
 
 pub extern "C" fn query_session<P: PluginApp>(raw_handle: *mut JanusPluginSession) -> *mut json_t {
@@ -426,196 +451,72 @@ pub extern "C" fn query_session<P: PluginApp>(raw_handle: *mut JanusPluginSessio
 fn query_session_impl<P: PluginApp>(
     raw_handle: *mut JanusPluginSession,
 ) -> Result<*mut json_t, Error> {
-    P::with_app(|app_ref| match &*app_ref.borrow() {
+    let app_ref = P::app()
+        .read()
+        .map_err(|err| Error::new(&format!("Failed to acquire app read lock: {}", err)))?;
+
+    match &*app_ref {
         None => Err(Error::new("Plugin not initialized")),
         Some(app) => {
-            let (_, plugin_handle) = app
+            let plugin_handle = app
                 .handle_registry()
                 .get_by_raw_handle(raw_handle)
-                .ok_or_else(|| Error::new("Handle not found"))?;
+                .ok_or_else(|| Error::new("Handle not found"))?
+                .plugin_handle();
 
             serialize(plugin_handle)
         }
-    })
+    }
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 
-enum Callback<H: Handle> {
-    RelayMediaPacket {
-        protocol: MediaProtocol,
-        kind: MediaKind,
-        buffer: Vec<i8>,
-    },
-    RelayDataPacket {
-        buffer: Vec<i8>,
-    },
-    ClosePeerConnection,
-    EndHandle,
-    NotifyEvent {
-        event: H::Event,
-    },
-    PushEvent {
-        message: OutgoingMessage<H::OutgoingMessagePayload>,
-    },
-}
-
-struct CallbackDispatch<H: Handle> {
-    handle_id: u64,
-    callback: Callback<H>,
-}
-
-impl<H: Handle> CallbackDispatch<H> {
-    fn new(handle_id: u64, callback: Callback<H>) -> Self {
-        Self {
-            handle_id,
-            callback,
-        }
-    }
-}
-
-/// An object for calling back Janus core.
-/// The object is tied to the handle.
-#[derive(Clone)]
-pub struct CallbackDispatcher<H: Handle> {
-    tx: mpsc::Sender<CallbackDispatch<H>>,
-    handle_id: u64,
-}
-
-impl<H: Handle> CallbackDispatcher<H> {
-    fn new(tx: mpsc::Sender<CallbackDispatch<H>>, handle_id: u64) -> Self {
-        Self { tx, handle_id }
-    }
-
-    /// Sends media `buffer` of `kind` type to the current handle by `protocol`.
-    pub fn relay_media_packet(
-        &self,
-        protocol: MediaProtocol,
-        kind: MediaKind,
-        buffer: &[i8],
-    ) -> Result<(), Error> {
-        // TODO: Copying for thread safety is not good for performance.
-        let mut owned_buffer = Vec::with_capacity(buffer.len());
-        owned_buffer.copy_from_slice(buffer);
-
-        self.dispatch(Callback::RelayMediaPacket {
-            protocol,
-            kind,
-            buffer: owned_buffer,
-        })
-    }
-
-    /// Sends `buffer` to the data channel of the current handle.
-    pub fn relay_data_packet(&self, buffer: &[i8]) -> Result<(), Error> {
-        // TODO: Copying for thread safety is not good for performance.
-        let mut owned_buffer = Vec::with_capacity(buffer.len());
-        owned_buffer.copy_from_slice(buffer);
-
-        self.dispatch(Callback::RelayDataPacket {
-            buffer: owned_buffer,
-        })
-    }
-
-    /// Closes PeerConnection of the current handle.
-    pub fn close_peer_connection(&self) -> Result<(), Error> {
-        self.dispatch(Callback::ClosePeerConnection)
-    }
-
-    /// Ends current handle.
-    pub fn end_handle(&self) -> Result<(), Error> {
-        self.dispatch(Callback::EndHandle)
-    }
-
-    /// Broadcasts an `event` to Janus's event handlers from the current handle.
-    pub fn notify_event(&self, event: H::Event) -> Result<(), Error> {
-        self.dispatch(Callback::NotifyEvent { event })
-    }
-
-    /// Sends an event `message` to the current handle's client.
-    pub fn push_event(
-        &self,
-        message: OutgoingMessage<H::OutgoingMessagePayload>,
-    ) -> Result<(), Error> {
-        self.dispatch(Callback::PushEvent { message })
-    }
-
-    fn dispatch(&self, callback: Callback<H>) -> Result<(), Error> {
-        self.tx
-            .send(CallbackDispatch::new(self.handle_id, callback))
-            .map_err(|err| Error::new(&format!("Failed to dispatch callback: {}", err)))
-    }
-}
-
-struct CallbackDispatcherBackend<P: PluginApp> {
-    janus_callbacks: *mut JanusCallbacks,
-    phantom: PhantomData<P>,
-}
-
-unsafe impl<P: PluginApp> Send for CallbackDispatcherBackend<P> {}
-unsafe impl<P: PluginApp> Sync for CallbackDispatcherBackend<P> {}
-
-impl<P: 'static + PluginApp> CallbackDispatcherBackend<P> {
-    fn start(janus_callbacks: *mut JanusCallbacks) -> mpsc::Sender<CallbackDispatch<P::Handle>> {
-        let (tx, rx) = mpsc::channel::<CallbackDispatch<P::Handle>>();
-
-        let backend = Self {
-            janus_callbacks,
-            phantom: PhantomData,
-        };
-
-        thread::spawn(move || {
-            for callback_dispatch in rx.into_iter() {
-                if let Err(err) = backend.dispatch(callback_dispatch) {
-                    janus_log(err.as_str());
-                }
-            }
-        });
-
-        tx
-    }
-
-    fn dispatch(&self, callback_dispatch: CallbackDispatch<P::Handle>) -> Result<(), Error> {
-        P::with_app(|app_ref| match &*app_ref.borrow() {
-            None => Err(Error::new("Plugin not initialized")),
-            Some(app) => {
-                let (_, handle) = app
-                    .handle_registry()
-                    .get_by_id(callback_dispatch.handle_id)
-                    .ok_or_else(|| {
-                        Error::new(&format!("Handle {} not found", callback_dispatch.handle_id))
-                    })?;
-
-                match callback_dispatch.callback {
-                    Callback::RelayMediaPacket {
-                        protocol,
-                        kind,
-                        ref buffer,
-                    } => self.relay_media_packet(handle, protocol, kind, buffer),
-                    Callback::RelayDataPacket { ref buffer } => {
-                        self.relay_data_packet(handle, buffer)
-                    }
-                    Callback::ClosePeerConnection => self.close_peer_connection(handle),
-                    Callback::EndHandle => self.end_handle(handle),
-                    Callback::NotifyEvent { ref event } => self.notify_event(handle, event),
-                    Callback::PushEvent { ref message } => self.push_event(handle, message),
-                }
-            }
-        })
-    }
-
+/// This trait contains methods to interact with Janus core.
+/// It's being automatically implemented for any type that is a plugin [Handle](trait.Handle.html).
+pub trait Callbacks<P: PluginApp>: Handle {
+    /// Sends a binary media `buffer` of `kind` type to the current handle by `protocol`.
     fn relay_media_packet(
         &self,
-        handle: &P::Handle,
+        protocol: MediaProtocol,
+        kind: MediaKind,
+        buffer: &[i8],
+    ) -> Result<(), Error>;
+
+    /// Sends a binary `buffer` to the current handle via data channel.
+    fn relay_data_packet(&self, buffer: &[i8]) -> Result<(), Error>;
+
+    /// Tells Janus to close the PeerConnection for the current handle.
+    fn close_peer_connection(&self) -> Result<(), Error>;
+
+    /// Tells Janus to finish the current handle.
+    fn end_handle(&self) -> Result<(), Error>;
+
+    /// Sends a broadcast event which will be delivered via event handler plugins.
+    fn notify_event<E: Serialize>(&self, event: &E) -> Result<(), Error>;
+
+    /// Sends an event message to the current handle.
+    /// This may be used for unicast notifications as well as for asynchronous responses.
+    fn push_event(
+        &self,
+        message: &OutgoingMessage<Self::OutgoingMessagePayload>,
+    ) -> Result<(), Error>;
+}
+
+impl<P: PluginApp> Callbacks<P> for P::Handle {
+    fn relay_media_packet(
+        &self,
         protocol: MediaProtocol,
         kind: MediaKind,
         buffer: &[i8],
     ) -> Result<(), Error> {
+        let callbacks = janus_callbacks::<P>()?;
+
         let janus_callback = match protocol {
-            MediaProtocol::Rtp => self.janus_callbacks().relay_rtp,
-            MediaProtocol::Rtcp => self.janus_callbacks().relay_rtcp,
+            MediaProtocol::Rtp => callbacks.relay_rtp,
+            MediaProtocol::Rtcp => callbacks.relay_rtcp,
         };
 
-        let raw_handle = Self::raw_handle(handle)?;
+        let raw_handle = raw_handle::<P>(self.id())?;
 
         let is_video = match kind {
             MediaKind::Video => 1,
@@ -632,34 +533,30 @@ impl<P: 'static + PluginApp> CallbackDispatcherBackend<P> {
         Ok(())
     }
 
-    fn relay_data_packet(&self, handle: &P::Handle, buffer: &[i8]) -> Result<(), Error> {
-        let janus_callback = self.janus_callbacks().relay_data;
-        let raw_handle = Self::raw_handle(handle)?;
+    fn relay_data_packet(&self, buffer: &[i8]) -> Result<(), Error> {
+        let janus_callback = janus_callbacks::<P>()?.relay_data;
+        let raw_handle = raw_handle::<P>(self.id())?;
         janus_callback(raw_handle, buffer.as_ptr() as *mut i8, buffer.len() as i32);
         Ok(())
     }
 
-    fn close_peer_connection(&self, handle: &P::Handle) -> Result<(), Error> {
-        let janus_callback = self.janus_callbacks().close_pc;
-        let raw_handle = Self::raw_handle(handle)?;
+    fn close_peer_connection(&self) -> Result<(), Error> {
+        let janus_callback = janus_callbacks::<P>()?.close_pc;
+        let raw_handle = raw_handle::<P>(self.id())?;
         janus_callback(raw_handle);
         Ok(())
     }
 
-    fn end_handle(&self, handle: &P::Handle) -> Result<(), Error> {
-        let janus_callback = self.janus_callbacks().end_session;
-        let raw_handle = Self::raw_handle(handle)?;
+    fn end_handle(&self) -> Result<(), Error> {
+        let janus_callback = janus_callbacks::<P>()?.end_session;
+        let raw_handle = raw_handle::<P>(self.id())?;
         janus_callback(raw_handle);
         Ok(())
     }
 
-    fn notify_event(
-        &self,
-        handle: &P::Handle,
-        event: &<P::Handle as Handle>::Event,
-    ) -> Result<(), Error> {
-        let janus_callback = self.janus_callbacks().notify_event;
-        let raw_handle = Self::raw_handle(handle)?;
+    fn notify_event<E: Serialize>(&self, event: &E) -> Result<(), Error> {
+        let janus_callback = janus_callbacks::<P>()?.notify_event;
+        let raw_handle = raw_handle::<P>(self.id())?;
 
         let event_json =
             serialize(event).map_err(|err| Error::new(&format!("Failed to serialize: {}", err)))?;
@@ -670,11 +567,10 @@ impl<P: 'static + PluginApp> CallbackDispatcherBackend<P> {
 
     fn push_event(
         &self,
-        handle: &P::Handle,
-        message: &OutgoingMessage<<P::Handle as Handle>::OutgoingMessagePayload>,
+        message: &OutgoingMessage<Self::OutgoingMessagePayload>,
     ) -> Result<(), Error> {
-        let janus_callback = self.janus_callbacks().push_event;
-        let raw_handle = Self::raw_handle(handle)?;
+        let janus_callback = janus_callbacks::<P>()?.push_event;
+        let raw_handle = raw_handle::<P>(self.id())?;
 
         let txn = CString::new(message.transaction().to_owned())
             .map_err(|err| Error::new(&format!("Failed to cast transaction: {}", err)))?;
@@ -701,24 +597,6 @@ impl<P: 'static + PluginApp> CallbackDispatcherBackend<P> {
             _ => Err(Error::new("Failed to push event")),
         }
     }
-
-    fn raw_handle(handle: &P::Handle) -> Result<*mut JanusPluginSession, Error> {
-        P::with_app(|app_ref| match &mut *app_ref.borrow_mut() {
-            None => Err(Error::new("Plugin not initialized")),
-            Some(app) => {
-                let (ref mut raw_handle, _) = app
-                    .handle_registry_mut()
-                    .get_by_id_mut(handle.id())
-                    .ok_or_else(|| Error::new(&format!("Handle {} not found", handle.id())))?;
-
-                Ok(*raw_handle as *mut JanusPluginSession)
-            }
-        })
-    }
-
-    fn janus_callbacks(&self) -> &JanusCallbacks {
-        unsafe { &*self.janus_callbacks }
-    }
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -741,16 +619,50 @@ fn dispatch_media_event<P: PluginApp>(
     raw_handle: *mut JanusPluginSession,
     media_event: &MediaEvent,
 ) -> Result<(), Error> {
-    P::with_app(|app_ref| match &*app_ref.borrow() {
+    let app_ref = P::app()
+        .read()
+        .map_err(|err| Error::new(&format!("Failed to acquire app read lock: {}", err)))?;
+
+    match &*app_ref {
         None => Err(Error::new("Plugin not initialized")),
         Some(app) => match app.handle_registry().get_by_raw_handle(raw_handle) {
             None => Err(Error::new("Handle not found")),
-            Some((_, plugin_handle)) => {
+            Some(entry) => {
+                let plugin_handle = entry.plugin_handle();
                 plugin_handle.handle_media_event(media_event);
                 Ok(())
             }
         },
-    })
+    }
+}
+
+fn raw_handle<P: PluginApp>(id: u64) -> Result<*mut JanusPluginSession, Error> {
+    let mut app_ref = P::app()
+        .write()
+        .map_err(|err| Error::new(&format!("Failed to acquire app write lock: {}", err)))?;
+
+    match &mut *app_ref {
+        None => Err(Error::new("Plugin not initialized")),
+        Some(app) => Ok(app
+            .handle_registry_mut()
+            .get_by_id_mut(id)
+            .ok_or_else(|| Error::new(&format!("Handle {} not found", id)))?
+            .raw_handle_mut()),
+    }
+}
+
+fn janus_callbacks<P: PluginApp>() -> Result<&'static JanusCallbacks, Error> {
+    let mut app_ref = P::app()
+        .write()
+        .map_err(|err| Error::new(&format!("Failed to acquire app write lock: {}", err)))?;
+
+    match &mut *app_ref {
+        None => Err(Error::new("Plugin not initialized")),
+        Some(app) => {
+            let callbacks = app.janus_callbacks();
+            Ok(unsafe { &*callbacks })
+        }
+    }
 }
 
 fn serialize<S: Serialize>(object: &S) -> Result<*mut json_t, Error> {

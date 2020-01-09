@@ -2,12 +2,12 @@ use std::sync::Arc;
 
 use futures::executor::ThreadPool;
 use janus_app::{
-    plugin::CallbackDispatcher, Error, IncomingMessage, IncomingMessageResponse, MediaEvent,
-    OutgoingMessage,
+    plugin::Callbacks, Error, IncomingMessage, MediaEvent, MessageResponse, OutgoingMessage,
 };
 use serde_derive::{Deserialize, Serialize};
 
 use crate::config::Config;
+use crate::ExamplePlugin;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "lowercase", tag = "method")]
@@ -20,15 +20,9 @@ pub enum OutgoingMessagePayload {
     Pong { data: String },
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "lowercase", tag = "label")]
-pub enum Event {}
-
 #[derive(Clone, Serialize)]
 pub struct Handle {
     id: u64,
-    #[serde(skip)]
-    callback_dispatcher: CallbackDispatcher<Self>,
     #[serde(skip)]
     config: Arc<Config>,
     #[serde(skip)]
@@ -36,15 +30,9 @@ pub struct Handle {
 }
 
 impl Handle {
-    pub(crate) fn new(
-        id: u64,
-        callback_dispatcher: CallbackDispatcher<Self>,
-        config: Arc<Config>,
-        thread_pool: Arc<ThreadPool>,
-    ) -> Self {
+    pub(crate) fn new(id: u64, config: Arc<Config>, thread_pool: Arc<ThreadPool>) -> Self {
         Self {
             id,
-            callback_dispatcher,
             config,
             thread_pool,
         }
@@ -54,7 +42,6 @@ impl Handle {
 impl janus_app::Handle for Handle {
     type IncomingMessagePayload = IncomingMessagePayload;
     type OutgoingMessagePayload = OutgoingMessagePayload;
-    type Event = Event;
 
     fn id(&self) -> u64 {
         self.id
@@ -86,36 +73,46 @@ impl janus_app::Handle for Handle {
 
     fn handle_message(
         &self,
-        message: &IncomingMessage<Self::IncomingMessagePayload>,
-    ) -> Result<IncomingMessageResponse<Self::OutgoingMessagePayload>, Error> {
-        println!("Got message on transaction {}", message.transaction());
+        message: IncomingMessage<Self::IncomingMessagePayload>,
+    ) -> Result<MessageResponse<Self::OutgoingMessagePayload>, Error> {
+        let id = self.id();
 
-        let future = match message.payload() {
-            IncomingMessagePayload::Ping { data } => ping(
-                self.callback_dispatcher.clone(),
-                self.config.clone(),
-                message.transaction().to_owned(),
-                data.to_owned(),
-            ),
+        let future = async move {
+            use janus_app::plugin::PluginApp;
+
+            // TODO: Add a more beautiful way to get plugin handle by ID.
+            match ExamplePlugin::app().read() {
+                Err(err) => println!("Failed to acquire app read lock: {}", err),
+                Ok(app_ref) => match &*app_ref {
+                    None => println!("Plugin not initialized"),
+                    Some(app) => match app.handle(id) {
+                        None => println!("Handle {} not found", id),
+                        Some(handle) => match message.payload() {
+                            IncomingMessagePayload::Ping { ref data } => {
+                                handle.ping(message.transaction(), data);
+                            }
+                        },
+                    },
+                },
+            }
         };
 
         self.thread_pool.spawn_ok(future);
-        Ok(IncomingMessageResponse::Ack)
+        Ok(MessageResponse::Ack)
     }
 }
 
-async fn ping(
-    dispatcher: CallbackDispatcher<Handle>,
-    config: Arc<Config>,
-    transaction: String,
-    data: String,
-) {
-    dispatcher
-        .push_event(OutgoingMessage::new(
-            transaction,
+impl Handle {
+    fn ping(&self, transaction: &str, data: &str) {
+        let message = OutgoingMessage::new(
+            transaction.to_owned(),
             OutgoingMessagePayload::Pong {
-                data: format!("{} {}", data, config.ping_response),
+                data: format!("{} {}", data, self.config.ping_response),
             },
-        ))
-        .unwrap_or_else(|err| println!("{}", err));
+        );
+
+        if let Err(err) = Callbacks::<ExamplePlugin>::push_event(self, &message) {
+            println!("{}", err);
+        }
+    }
 }

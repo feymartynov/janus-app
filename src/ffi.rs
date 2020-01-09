@@ -1,4 +1,4 @@
-/// necessary low-level stuff missing in janus-plugin-sys crate.
+/// Necessary low-level stuff missing in janus-plugin-sys crate.
 
 #[repr(C)]
 #[derive(Debug)]

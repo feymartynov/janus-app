@@ -95,14 +95,14 @@ class ExamplePluginClient {
 let client = new ExamplePluginClient();
 let pingBtn = document.getElementById('pingBtn');
 
-pingBtn.onClick = async function() {
+pingBtn.addEventListener('click', async function() {
   try {
     let response = await client.ping('ping');
     console.log(response);
   } catch (err) {
     console.error(err);
   }
-}
+});
 
 async function init() {
   try {

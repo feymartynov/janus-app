@@ -22,7 +22,7 @@
 //! * Unit testing is possible for plugins because they aren't coupled to C code.
 //!
 //!
-//! # How do I make a plugin?
+//! # How to write a plugin
 //!
 //! The simpliest way is to copy-paste and change the
 //! [example](https://github.com/feymartynov/janus-app/tree/master/example) plugin but here
@@ -82,43 +82,33 @@
 //!   const NAME: &'static str = "Author name";
 //!   const DESCRIPTION: &'static str = "My plugin description";
 //!   const PACKAGE: &'static str = "janus.plugin.my_plugin";
+//!
+//!   fn init(_config_path: &Path) -> Result<Box<Self>, Error> {
+//!     Ok(Box::new(Self {}))
+//!   }
+//!
+//!   fn build_handle(&self, id: u64) -> Self::Handle {
+//!     Self::Handle::new(id)
+//!   }
 //! }
 //!
 //! janus_plugin!(MyPlugin);
 //! ```
 //!
-//! The [Plugin](trait.Plugin.html) trait requires to define an associated type for plugin handle
-//! which we'll define later, plugin info constants and also [init](trait.Plugin.html#tymethod.init)
-//! and [build_handle](trait.Plugin.html#tymethod.build_handle) methods.
+//! The [Plugin](trait.Plugin.html) trait requires to define an
+//! [associated type for plugin handle](trait.Plugin.html#associatedtype.Handle) which we'll define
+//! later, [plugin info constants](trait.Plugin.html#associated-const),
+//! [init](trait.Plugin.html#tymethod.init) function and
+//! [build_handle](trait.Plugin.html#tymethod.build_handle) method.
 //!
-//! ### Implementing [init](trait.Plugin.html#tymethod.init)
+//! [init](trait.Plugin.html#tymethod.init) function is being called to create an instance of the
+//! plugin. Here we can initialize the plugin state. `config_path` argument is being supplied and
+//! contains config *directory* path. You may use it to read and parse the plugin's config then
+//! store it in the plugin object but this is out of scope now since we're building a minimal setup.
+//! See example plugin for details.
 //!
-//! ```rust
-//! fn init(_config_path: &Path) -> Result<Box<Self>, Error> {
-//!   Ok(Box::new(Self {}))
-//! }
-//! ```
-//!
-//! This is pretty straightforward. `config_path` argument is being supplied by Janus core and
-//! contains config *directory* path. You may use it to read and parse the plugin's config
-//! then store it in the plugin object but this is out of scope now since we're building
-//! a minimal setup. See example plugin for details.
-//!
-//!
-//! ### Implementing [build_handle](trait.Plugin.html#tymethod.build_handle)
-//!
-//! Finally we must provide a handler builder method. If you want to pass something from
-//! the plugin's state to the handle this is the place but here we go simply as:
-//!
-//! ```rust
-//! fn build_handle(
-//!   &self,
-//!   id: u64,
-//!   callback_dispatcher: CallbackDispatcher<Self::Handle>,
-//! ) -> Self::Handle {
-//!   Handle::new(id, callback_dispatcher)
-//! }
-//! ```
+//! [build_handle](trait.Plugin.html#tymethod.build_handle) method is for creating a plugin handle
+//! instance. Here we may want to pass in some data from the plugin state.
 //!
 //!
 //! ## Defining a handle
@@ -131,16 +121,15 @@
 //!
 //! ```rust
 //! use janus_app::{
-//!     plugin::CallbackDispatcher, Error, IncomingMessage, IncomingMessageResponse, MediaEvent,
-//!     OutgoingMessage,
+//!     plugin::Callbacks, Error, IncomingMessage, MessageResponse, MediaEvent, OutgoingMessage,
 //! };
 //!
 //! use serde_derive::{Deserialize, Serialize};
 //! ```
 //!
-//! ### Defininng data types
+//! ### Defininng message types
 //!
-//! Before defining the handle type let's define some data types to associate it with:
+//! Before defining the handle type let's define message types to associate it with:
 //!
 //! ```rust
 //! #[derive(Clone, Debug, Deserialize)]
@@ -150,11 +139,6 @@
 //!
 //! #[derive(Debug, Serialize)]
 //! pub enum OutgoingMessagePayload {
-//! }
-//!
-//! #[derive(Serialize)]
-//! #[serde(rename_all = "lowercase", tag = "label")]
-//! pub enum Event {
 //! }
 //! ```
 //!
@@ -168,33 +152,24 @@
 //! responses. We return it from [handle_message](trait.Handle.html#tymethod.handle_message) and
 //! then it gets serialized to JSON by serde.
 //!
-//! [Event](trait.Handle.html#associatedtype.Event) enum is for broadcasting events with Janus's
-//! event handlers. It's being used as and argument for
-//! [notify_event](plugin/struct.CallbackDispatcher.html#method.notify_event) callback.
-//!
-//!
 //! ### Defining the handle struct
 //!
 //! ```rust
 //! #[derive(Clone, Serialize)]
 //! struct MyHandle {
 //!   id: u64,
-//!   #[serde(skip)]
-//!   callback_dispatcher: CallbackDispatcher<Self>,
 //! }
 //!
 //! impl MyHandle {
-//!   pub(crate) fn new(id: u64, callback_dispatcher: CallbackDispatcher<Self>) -> Self {
-//!     Self { id, callback_dispatcher }
+//!   pub(crate) fn new(id: u64) -> Self {
+//!     Self { id }
 //!   }
 //! }
 //! ```
 //!
-//! This is simple. We have a struct that stores the ID and the callback
-//! dispatcher which is an object to call Janus's callbacks with in a thread-safe way.
-//! We'll see how to use it later.
-//!
+//! This is simple. We have a struct that stores the handle ID.
 //! The constructor is the one we called earlier in `MyPlugin::build_handle`.
+//! We may also initialize some handle state here.
 //!
 //! `MyHandle` is serializable because we need to serialize it when replying to `query_handle`
 //! Janus's call.
@@ -212,7 +187,6 @@
 //! impl Handle for MyHandle {
 //!   type IncomingMessagePayload = IncomingMessagePayload;
 //!   type OutgoingMessagePayload = OutgoingMessagePayload;
-//!   type Event = Event;
 //!
 //!   fn id(&self) -> u64 {
 //!     self.id
@@ -223,30 +197,41 @@
 //!
 //!   fn handle_message(
 //!     &self,
-//!     _message: &IncomingMessage<Self::IncomingMessagePayload>
-//!   ) -> Result<IncomingMessageResponse<Self::OutgoingMessagePayload>, Error> {
-//!     Ok(IncomingMessageResponse::Ack)
+//!     _message: IncomingMessage<Self::IncomingMessagePayload>
+//!   ) -> Result<MessageResponse<Self::OutgoingMessagePayload>, Error> {
+//!     Ok(MessageResponse::Ack)
 //!   }
 //! }
 //! ```
 //!
+//! [handle_media](trait.Handle.html#tymethod.handle_media) is the place to handle media-related
+//! events like RTP/RTCP packets and so on. Check out [MediaEvent](enum.MediaEvent.html) docs
+//! to see all possible variants.
+//!
 //! [handle_message](trait.Handle.html#tymethod.handle_message) must return an
-//! [IncomingMessageResponse](enum.IncomingMessageResponse.html) variant which is
-//! [Synchronous(P)](enum.IncomingMessageResponse.html#variant.Syncronous) for immediate response
-//! or [Ack](enum.IncomingMessageResponse.html#variant.Ack) for deferred response.
+//! [MessageResponse](enum.MessageResponse.html) variant which is
+//! [Synchronous(P)](enum.MessageResponse.html#variant.Syncronous) for immediate response
+//! or [Ack](enum.MessageResponse.html#variant.Ack) for deferred response.
 //! In this case an ack response will be sent immediately and further event(s) on this transaction
-//! may be sent using [push_event](plugin/struct.CallbackDispatcher.html#method.push_event).
+//! may be sent using [push_event](plugin/trait.Callbacks.html#method.push_event).
 //!
 //!
 //! ## Calling callbacks
 //!
-//! For calling back Janus core use [CallbackDispatcher](plugin/struct.CallbackDispatcher.html)
-//! object was provided to `MyPlugin::build_handle` and then passed to `MyHandle::new`.
+//! For calling back Janus core use [Callbacks](plugin/trait.Callbacks.html) trait which is being
+//! automatically defined on a type that implements [Handle](trait.Handle.html).
 //!
-//! This object is thread-safe so you can clone it to another thread and interact with Janus core
-//! from there.
+//! To enable you need to bring it into the scope which we've already done
+//! [above](#defining-a-handle).
 //!
-//! See [CallbackDispatcher](plugin/struct.CallbackDispatcher.html) type docs for available methods.
+//! Check out [Callbacks](plugin/trait.Callbacks.html) trait docs for available methods.
+//!
+//! [Callbacks](plugin/trait.Callbacks.html) is a generic trait so it requires the plugin type
+//! as a generic type parameter so a method call looks like this:
+//!
+//! ```rust
+//! Callbacks::<MyPlugin>::push_event(self, &message);
+//! ```
 //!
 //!
 //! ## Compiling and installing
@@ -270,9 +255,8 @@ use std::path::Path;
 use serde::{de, ser};
 use serde_derive::{Deserialize, Serialize};
 
-use plugin::CallbackDispatcher;
-
 pub use error::Error;
+pub use lazy_static::lazy_static;
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -340,13 +324,13 @@ pub enum Jsep {
 
 /// Incoming message sent by Janus's `message` request.
 #[derive(Debug)]
-pub struct IncomingMessage<P: Clone + de::DeserializeOwned> {
+pub struct IncomingMessage<P: de::DeserializeOwned> {
     transaction: String,
     payload: P,
     jsep: Option<Jsep>,
 }
 
-impl<P: Clone + de::DeserializeOwned> IncomingMessage<P> {
+impl<P: de::DeserializeOwned> IncomingMessage<P> {
     pub fn new(transaction: String, payload: P) -> Self {
         Self {
             transaction,
@@ -414,25 +398,18 @@ impl<P: ser::Serialize> OutgoingMessage<P> {
 
 /// Response for `IncomingMessage`.
 #[derive(Debug)]
-pub enum IncomingMessageResponse<P: ser::Serialize> {
+pub enum MessageResponse<P: ser::Serialize> {
     /// Immediate (synchronous) response with the provided payload.
     Syncronous(P),
     /// Deferred (asynchronous) response using
-    /// [push_event](plugin/struct.CallbackDispatcher.html#method.push_event) later on.
+    /// [push_event](plugin/trait.Callbacks.html#method.push_event) later on.
     Ack,
 }
 
 /// Plugin handle trait.
 pub trait Handle: Clone + Sized + ser::Serialize {
-    /// Deserializable payload for [IncomingMessage](struct.IncomingMessage.html).
-    type IncomingMessagePayload: Clone + de::DeserializeOwned;
-
-    /// Serializable payload for [OutgoingMessage](struct.OutgoingMessage.html).
-    type OutgoingMessagePayload: Send + ser::Serialize;
-
-    /// Serializable event data for broadcasting with
-    /// [notify_event](plugin/struct.CallbackDispatcher.html#method.notify_event) callback.
-    type Event: Send + ser::Serialize;
+    type IncomingMessagePayload: de::DeserializeOwned;
+    type OutgoingMessagePayload: ser::Serialize;
 
     /// Handle ID getter.
     fn id(&self) -> u64;
@@ -443,8 +420,8 @@ pub trait Handle: Clone + Sized + ser::Serialize {
     /// Incoming message handler.
     fn handle_message(
         &self,
-        message: &IncomingMessage<Self::IncomingMessagePayload>,
-    ) -> Result<IncomingMessageResponse<Self::OutgoingMessagePayload>, Error>;
+        message: IncomingMessage<Self::IncomingMessagePayload>,
+    ) -> Result<MessageResponse<Self::OutgoingMessagePayload>, Error>;
 }
 
 /// The trait to define a plugin.
@@ -479,11 +456,7 @@ pub trait Plugin {
 
     /// A method to build a handle object.
     /// Being called when a client calls Janus's `attach` method.
-    fn build_handle(
-        &self,
-        id: u64,
-        callback_dispatcher: CallbackDispatcher<Self::Handle>,
-    ) -> Self::Handle;
+    fn build_handle(&self, id: u64) -> Self::Handle;
 }
 
 ///////////////////////////////////////////////////////////////////////////////

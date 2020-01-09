@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use futures::executor::ThreadPool;
-use janus_app::{janus_plugin, plugin::CallbackDispatcher, Error, Plugin};
+use janus_app::{janus_plugin, Error, Plugin};
 
 use crate::{config::Config, handle::Handle};
 
@@ -43,17 +43,8 @@ impl Plugin for ExamplePlugin {
         Ok(Box::new(plugin))
     }
 
-    fn build_handle(
-        &self,
-        id: u64,
-        callback_dispatcher: CallbackDispatcher<Self::Handle>,
-    ) -> Self::Handle {
-        Handle::new(
-            id,
-            callback_dispatcher,
-            self.config.clone(),
-            self.thread_pool.clone(),
-        )
+    fn build_handle(&self, id: u64) -> Self::Handle {
+        Handle::new(id, self.config.clone(), self.thread_pool.clone())
     }
 }
 
